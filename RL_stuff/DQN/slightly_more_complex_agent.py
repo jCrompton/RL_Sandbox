@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class Agent:
-    def __init__(self, env, total_episodes=1000, max_steps=100, state_shape=[4,4], batch_size=64, explore_start=1.0, explore_stop=0.01, decay_rate=0.0001, action_size=2, debug=False, learning_rate = 0.0002, memory_size = 1000000, gamma=0.95):
+    def __init__(self, env, total_episodes=10000, max_steps=100, state_shape=[4,4], batch_size=64, explore_start=1.0, explore_stop=0.01, decay_rate=0.0001, action_size=2, debug=False, learning_rate = 0.0002, memory_size = 1000000, gamma=0.95):
         self.env = env
         self.network = DQNetwork(state_shape, action_size, learning_rate)
         self.saver = tf.train.Saver()
@@ -58,17 +58,17 @@ class Agent:
 
         for episode in range(self.total_episodes):
             step = 0 
+            done = False
             episode_rewards = []
             state = self.env.reset()
             state, stacked_frames = stack_frames(deque(), state, True)
 
             if episode % 5 == 0:
                 save_path = self.saver.save(self.sess, "./models/model.ckpt")
-                print("Model Saved...\n")
+                if self.debug:
+                    print("Model Saved...\n")
 
-            while step < self.max_steps:
-                step+=1
-
+            while not done:
                 decay_step += 1
 
                 action, explore_probability = self.predict_action(state)
@@ -133,6 +133,29 @@ class Agent:
             summary = self.sess.run(self.write_op,feed_dict=feed)
             self.writer.add_summary(summary, episode)
             self.writer.flush()
+
+    def play(self, num_episodes=1):
+        for i in range(num_episodes):
+            total_score = 0
+            done = False
+            state = self.env.reset()
+            state, stacked_frames = stack_frames(deque(), state, True)
+            while not done:
+                # Get predicted q-values from trained network (if you trained it)
+                Q_values = self.sess.run(self.network.output, feed_dict={self.network.inputs_:state.reshape((1, *state.shape))})
+                # Always act greedily (take argmax of q-values)
+                action = np.argmax(Q_values)
+                # Run with that action 
+                state, reward, done, _ = self.env.step(action)
+                
+                # Add to current total_rewards
+                total_score += reward
+                # Convert back into stacked form for next prediction 
+                state, stacked_frames = stack_frames(stacked_frames, state, True)
+                if self.debug:
+                    self.env.render()
+            if self.debug:
+                print("Finished episode {} with a total score of {}".format(i, total_score))
 
 
 def stack_frames(stacked_frames, state, is_new_episode, stack_size=4, max_len=4):
