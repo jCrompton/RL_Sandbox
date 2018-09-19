@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class Agent:
-    def __init__(self, env, total_episodes=500, max_steps=100, state_shape=[4,4], batch_size=64, explore_start=1.0, explore_stop=0.01, decay_rate=0.0001, action_size=2, debug=False, learning_rate = 0.0002, memory_size = 1000000, gamma=0.95):
+    def __init__(self, env, total_episodes=1000, max_steps=100, state_shape=[4,4], batch_size=64, explore_start=1.0, explore_stop=0.01, decay_rate=0.0001, action_size=2, debug=False, learning_rate = 0.0002, memory_size = 1000000, gamma=0.95):
         self.env = env
         self.network = DQNetwork(state_shape, action_size, learning_rate)
         self.saver = tf.train.Saver()
@@ -41,7 +41,7 @@ class Agent:
 
         if (explore_probability > exp_exp_tradeoff):
             # Take random action
-            return self.env.action_space.sample(), explore_probability
+            return one_hot_encode_state(self.env.action_space.sample()), explore_probability
 
         else:
             # Predict action from DQN
@@ -49,7 +49,7 @@ class Agent:
             Q_values = self.sess.run(self.network.output, feed_dict={self.network.inputs_:state.reshape((1, *state.shape))})
 
             # Take the biggest Q value
-            return np.argmax(Q_values), explore_probability
+            return one_hot_encode_state(np.argmax(Q_values)), explore_probability
 
     def train(self):
         self.sess.run(tf.global_variables_initializer())
@@ -72,7 +72,7 @@ class Agent:
                 decay_step += 1
 
                 action, explore_probability = self.predict_action(state)
-                next_state, reward, done, _ = self.env.step(action)
+                next_state, reward, done, _ = self.env.step(one_hot_decode_state(action))
 
                 episode_rewards.append(reward)
 
@@ -121,7 +121,7 @@ class Agent:
 
             targets_minibatch = np.array(target_Qs_batch)
 
-            print(actions_minibatch)
+        
             feed = {self.network.inputs_:states_minibatch,
                            self.network.target_Q: targets_minibatch,
                            self.network.actions_: actions_minibatch}
@@ -147,6 +147,11 @@ def stack_frames(stacked_frames, state, is_new_episode, stack_size=4, max_len=4)
 
     return np.stack(stacked_frames), stacked_frames
 
+def one_hot_encode_state(state, action_space=2):
+    return [1,0] if state == 0 else [0,1]
+
+def one_hot_decode_state(state):
+    return np.argmax(state)
 
 class DQNetwork:
     def __init__(self, state_size, action_size, learning_rate, name='DQNetwork', hidden_layer_size = 120):
@@ -158,7 +163,7 @@ class DQNetwork:
             # Create placeholders
             # Where *state_size just unfolds the state_size array e.g.: if state_size was [5,5] then we'd write [None, 5, 5]
             self.inputs_ = tf.placeholder(tf.float32, [None, *state_size], name='inputs')
-            self.actions_ = tf.placeholder(tf.float32, [None,], name='actions')
+            self.actions_ = tf.placeholder(tf.float32, [None,2], name='actions')
 
             self.target_Q = tf.placeholder(tf.float32, [None], name='target')
 
@@ -195,9 +200,9 @@ class Memory():
                 state, stacked_frames = stack_frames(None, state, True)
 
             # Random action
-            action = env.action_space.sample()
+            action = one_hot_encode_state(env.action_space.sample())
 
-            next_state, reward, done, _  = env.step(action)
+            next_state, reward, done, _  = env.step(one_hot_decode_state(action))
             next_state, stacked_frames = stack_frames(stacked_frames, next_state, False)
 
             if done:
