@@ -9,6 +9,9 @@ import random
 import time
 from collections import deque
 
+from skimage import transform
+from skimage import data, color
+
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -23,11 +26,11 @@ class Agent:
 
         self.env = env
         self.stack_size = stack_size
-        self.network = DQNetwork((*env.observation_space.shape, stack_size), env.action_space.n, learning_rate)
-        self.saver = tf.train.Saver()
-        self.sess = tf.Session()
         self.total_episodes = total_episodes
         self.memory = Memory(env, memory_size, pretrain_length, stack_size)
+        self.network = DQNetwork(self.memory.buffer[0][0].shape, env.action_space.n, learning_rate)
+        self.saver = tf.train.Saver()
+        self.sess = tf.Session()
         self.batch_size = batch_size
         self.debug = debug
         self.explore_start = explore_start
@@ -50,8 +53,8 @@ class Agent:
     def predict_action(self, state):
         exp_exp_tradeoff = np.random.randn()
 
-        explore_probability = self.explore_stop + (self.explore_start - self.explore_start) * np.exp(-self.decay_rate*self.decay_step)
-
+        explore_probability = self.explore_stop + (self.explore_start - self.explore_stop) * np.exp(-self.decay_rate*self.decay_step)
+        
         if (explore_probability > exp_exp_tradeoff):
             # Take random action
             return one_hot_encode_action(self.env.action_space.sample(), self.env.action_space.n), explore_probability
@@ -66,8 +69,6 @@ class Agent:
 
     def train(self):
         self.sess.run(tf.global_variables_initializer())
-        # Init decay step for epsilon greedy algo
-        decay_step = 0
 
         for episode in range(self.total_episodes):
             step = 0 
@@ -89,7 +90,7 @@ class Agent:
                 if self.debug and show_episode:
                     self.env.render()
 
-                decay_step += 1
+                self.decay_step += 1
 
                 action, explore_probability = self.predict_action(state)
                 next_state, reward, done, _ = self.env.step(one_hot_decode_action(action))
@@ -176,8 +177,11 @@ class Agent:
             if self.debug:
                 print("Finished episode {} with a total score of {}".format(i, total_score))
 
+def preprocess_image(frame, resize_shape=(120,120)):
+    return transform.resize(color.rgb2gray(frame), [120,120], anti_aliasing=True)
 
-def stack_frames(stacked_frames, state, is_new_episode, stack_size=4):
+def stack_frames(stacked_frames, state, is_new_episode, stack_size=4, preprocess_if_image=True):
+    state = preprocess_image(state) if preprocess_if_image and len(state.shape) > 2 else state
     if is_new_episode:
         stacked_frames = deque([np.zeros(state.shape, dtype=np.int) for i in range(stack_size)], maxlen=stack_size)
 
@@ -197,10 +201,12 @@ def one_hot_decode_action(action):
 
 class DQNetwork:
     def __init__(self, state_size, action_size, learning_rate, name='DQNetwork', dense_architecture=[120, 40],
-                 dropout=True, activation=tf.nn.relu, dropout_rate=0.25):
+                 dropout=True, activation=tf.nn.relu, dropout_rate=0.25, conv_architecture=[(32,8,4), (64,4,2), (128,4,2)],
+                 batch_norm=True):
         self.state_size = state_size
         self.action_size = action_size
         self.learning_rate = learning_rate
+        self.image_data = True if len(state_size) > 2 else False
 
         with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
             # Create placeholders
@@ -210,8 +216,23 @@ class DQNetwork:
 
             self.target_Q = tf.placeholder(tf.float32, [None], name='target')
 
-            # Initialize with Flattening layer (flatten stack, probably not best thing to do but w.e)
-            fc_i_layer = tf.layers.flatten(self.inputs_)
+            # Initialize with Flattening layer (flatten stack, probably not best thing to do but w.e) if not image
+            
+            convolution = self.inputs_
+
+            if self.image_data:
+                conv_layer = 1
+
+                for num_filters, kernel_size, strides in conv_architecture:
+                    convolution = tf.layers.conv2d(inputs=convolution, filters=num_filters, kernel_size=[kernel_size, kernel_size],
+                        strides=[strides,strides], padding="VALID", kernel_initializer=tf.contrib.layers.xavier_initializer_conv2d(),
+                        name="convolution_{}".format(conv_layer), activation=activation)
+                    if batch_norm:
+                        convolution = tf.layers.batch_normalization(convolution, training=True, name="batch_norm_{}".format(conv_layer)) 
+
+                    conv_layer += 1
+
+            fc_i_layer = tf.layers.flatten(convolution)
 
             for i, layer_units in enumerate(dense_architecture):
                 fc_i_layer = tf.layers.dense(inputs=fc_i_layer, units=layer_units, activation = activation, name='full_connected_{}'.format(i))
@@ -286,6 +307,8 @@ if __name__ == '__main__':
     parser.add_argument('--pretrain_length', type=int, default=2000)
     parser.add_argument('--stack_size', type=int, default=4)
     parser.add_argument('--num_episodes', type=int, default=1)
+    parser.add_argument('--debug_rate', type=int, default=6)
+
 
     parser.add_argument('--dropout', action='store_true')
     parser.add_argument('--dropout_rate', type=float, default=0.25)
@@ -296,8 +319,9 @@ if __name__ == '__main__':
     args = vars(parser.parse_args())
 
     play = args.pop('play')
-    num_episodes = args.pop('num_episodes')
 
+    num_episodes = args.pop('num_episodes')
+    print(args)
     agent = Agent(**args)
 
     if play:
